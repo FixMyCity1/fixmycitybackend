@@ -8,7 +8,6 @@ import cloudinary.uploader
 from dependencies.authn import is_authenticated
 from dependencies.authnz import has_roles
 
-
 # --- Create Issues Router ---
 issues_router = APIRouter()
 
@@ -19,17 +18,19 @@ def get_issues(
     title: str = "",
     description: str = "",
     region: str = "",
+    category: str = "",        
     limit: int = 10,
     skip: int = 0,
 ):
     """
-    Retrieve all issues with optional search filters.
+    Retrieve all issues with optional search filters (title, description, region, category).
     """
     query = {
         "$or": [
             {"title": {"$regex": title, "$options": "i"}},
             {"description": {"$regex": description, "$options": "i"}},
             {"region": {"$regex": region, "$options": "i"}},
+            {"category": {"$regex": category, "$options": "i"}},
         ]
     }
 
@@ -46,12 +47,13 @@ def post_issue(
     title: Annotated[str, Form()],
     description: Annotated[str, Form()],
     region: Annotated[str, Form()],
-    gps_location: Annotated[str, Form()],  # <--- Single GPS field
+    category: Annotated[str, Form()],        
+    gps_location: Annotated[str, Form()],
     flyer: Annotated[UploadFile, File()],
     user_id: Annotated[str, Depends(is_authenticated)],
 ):
     """
-    Allows users to report new issues with region and a single GPS location field.
+    Allows users to report new issues with region, category, and a single GPS location field.
     """
     # Check if same user already created issue with same title
     existing_issue = issues_collection.count_documents({"title": title, "owner": user_id})
@@ -70,7 +72,8 @@ def post_issue(
             "title": title,
             "description": description,
             "region": region,
-            "gps_location": gps_location,  # Stored as string
+            "category": category,             
+            "gps_location": gps_location,
             "flyer": upload_result["secure_url"],
             "owner": user_id,
         }
@@ -111,11 +114,12 @@ def update_issue(
     title: Annotated[str, Form()],
     description: Annotated[str, Form()],
     region: Annotated[str, Form()],
+    category: Annotated[str, Form()],         
     gps_location: Annotated[str, Form()],
     flyer: Optional[UploadFile] = File(None),
 ):
     """
-    Allows authorities to update issues, including region and GPS location.
+    Allows authorities to update issues, including region, category, and GPS location.
     """
     if not ObjectId.is_valid(issue_id):
         raise HTTPException(
@@ -127,6 +131,7 @@ def update_issue(
         "title": title,
         "description": description,
         "region": region,
+        "category": category,                  
         "gps_location": gps_location,
     }
 
@@ -147,29 +152,3 @@ def update_issue(
         )
 
     return {"message": "Issue updated successfully"}
-
-
-# --- Delete Issue (AUTHORITIES only) ---
-@issues_router.delete(
-    "/issues/{issue_id}",
-    dependencies=[Depends(has_roles("authorities"))],
-)
-def delete_issue(issue_id: str):
-    """
-    Allows authorities to delete an issue.
-    """
-    if not ObjectId.is_valid(issue_id):
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Invalid issue ID"
-        )
-
-    result = issues_collection.delete_one({"_id": ObjectId(issue_id)})
-
-    if result.deleted_count == 0:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND,
-            detail="Issue not found"
-        )
-
-    return {"message": "Issue deleted successfully"}
