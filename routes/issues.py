@@ -8,6 +8,7 @@ import cloudinary.uploader
 from dependencies.authn import is_authenticated
 from dependencies.authnz import has_roles
 
+
 # --- Create Issues Router ---
 issues_router = APIRouter()
 
@@ -18,12 +19,12 @@ def get_issues(
     title: str = "",
     description: str = "",
     region: str = "",
-    category: str = "",        
     limit: int = 10,
     skip: int = 0,
+    category: str = "", 
 ):
     """
-    Retrieve all issues with optional search filters (title, description, region, category).
+    Retrieve all issues with optional search filters.
     """
     query = {
         "$or": [
@@ -47,13 +48,13 @@ def post_issue(
     title: Annotated[str, Form()],
     description: Annotated[str, Form()],
     region: Annotated[str, Form()],
-    category: Annotated[str, Form()],        
-    gps_location: Annotated[str, Form()],
+    gps_location: Annotated[str, Form()],  # <--- Single GPS field
     flyer: Annotated[UploadFile, File()],
     user_id: Annotated[str, Depends(is_authenticated)],
+    category: Annotated[str, Form()],
 ):
     """
-    Allows users to report new issues with region, category, and a single GPS location field.
+    Allows users to report new issues with region and a single GPS location field.
     """
     # Check if same user already created issue with same title
     existing_issue = issues_collection.count_documents({"title": title, "owner": user_id})
@@ -72,10 +73,10 @@ def post_issue(
             "title": title,
             "description": description,
             "region": region,
-            "category": category,             
-            "gps_location": gps_location,
+            "gps_location": gps_location,  # Stored as string
             "flyer": upload_result["secure_url"],
             "owner": user_id,
+            "category": category,
         }
     )
 
@@ -114,12 +115,13 @@ def update_issue(
     title: Annotated[str, Form()],
     description: Annotated[str, Form()],
     region: Annotated[str, Form()],
-    category: Annotated[str, Form()],         
     gps_location: Annotated[str, Form()],
+    category: Annotated[str, Form()],
     flyer: Optional[UploadFile] = File(None),
+    
 ):
     """
-    Allows authorities to update issues, including region, category, and GPS location.
+    Allows authorities to update issues, including region and GPS location.
     """
     if not ObjectId.is_valid(issue_id):
         raise HTTPException(
@@ -131,8 +133,8 @@ def update_issue(
         "title": title,
         "description": description,
         "region": region,
-        "category": category,                  
         "gps_location": gps_location,
+        "category": category, 
     }
 
     # If a new flyer is uploaded
@@ -152,3 +154,5 @@ def update_issue(
         )
 
     return {"message": "Issue updated successfully"}
+
+
