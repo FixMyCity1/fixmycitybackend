@@ -1,8 +1,8 @@
-from fastapi import Form, File, UploadFile, APIRouter, status,HTTPException, Depends
+from fastapi import Form, File, UploadFile, APIRouter, status, HTTPException, Depends
 from db import issues_collection
 from bson.objectid import ObjectId
 from utils import replace_mongo_id
-from typing import Annotated
+from typing import Annotated, Optional
 import cloudinary
 import cloudinary.uploader
 from dependencies.authn import is_authenticated
@@ -15,19 +15,25 @@ issues_router = APIRouter()
 
 # --- Get All Issues ---
 @issues_router.get("/issues")
-def get_issues(title: str = "", description: str = "", limit: int = 10, skip: int = 0):
+def get_issues(
+    title: str = "",
+    description: str = "",
+    region: str = "",
+    limit: int = 10,
+    skip: int = 0,
+):
     """
     Retrieve all issues with optional search filters.
     """
-    issues = issues_collection.find(
-        {
-            "$or": [
-                {"title": {"$regex": title, "$options": "i"}},
-                {"description": {"$regex": description, "$options": "i"}},
-            ]
-        }
-    ).skip(int(skip)).limit(int(limit))
+    query = {
+        "$or": [
+            {"title": {"$regex": title, "$options": "i"}},
+            {"description": {"$regex": description, "$options": "i"}},
+            {"region": {"$regex": region, "$options": "i"}},
+        ]
+    }
 
+    issues = issues_collection.find(query).skip(int(skip)).limit(int(limit))
     return {"data": [replace_mongo_id(issue) for issue in issues]}
 
 
@@ -39,17 +45,17 @@ def get_issues(title: str = "", description: str = "", limit: int = 10, skip: in
 def post_issue(
     title: Annotated[str, Form()],
     description: Annotated[str, Form()],
+    region: Annotated[str, Form()],
+    gps_location: Annotated[str, Form()],  # <--- Single GPS field
     flyer: Annotated[UploadFile, File()],
     user_id: Annotated[str, Depends(is_authenticated)],
 ):
     """
-    Allows users to report new issues.
+    Allows users to report new issues with region and a single GPS location field.
     """
     # Check if same user already created issue with same title
-    issues_count = issues_collection.count_documents(
-        {"title": title, "owner": user_id}
-    )
-    if issues_count > 0:
+    existing_issue = issues_collection.count_documents({"title": title, "owner": user_id})
+    if existing_issue > 0:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Issue with title '{title}' already exists for this user."
@@ -63,6 +69,8 @@ def post_issue(
         {
             "title": title,
             "description": description,
+            "region": region,
+            "gps_location": gps_location,  # Stored as string
             "flyer": upload_result["secure_url"],
             "owner": user_id,
         }
@@ -78,11 +86,17 @@ def get_issue_by_id(issue_id: str):
     Retrieve a single issue by ID.
     """
     if not ObjectId.is_valid(issue_id):
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid issue ID")
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid issue ID"
+        )
 
     issue = issues_collection.find_one({"_id": ObjectId(issue_id)})
     if not issue:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Issue not found")
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            detail="Issue not found"
+        )
 
     return {"data": replace_mongo_id(issue)}
 
@@ -96,17 +110,27 @@ def update_issue(
     issue_id: str,
     title: Annotated[str, Form()],
     description: Annotated[str, Form()],
-    flyer: Annotated[UploadFile, File()] = None,
+    region: Annotated[str, Form()],
+    gps_location: Annotated[str, Form()],
+    flyer: Optional[UploadFile] = File(None),
 ):
     """
-    Allows authorities to edit/update issues.
+    Allows authorities to update issues, including region and GPS location.
     """
     if not ObjectId.is_valid(issue_id):
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid issue ID")
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid issue ID"
+        )
 
-    update_data = {"title": title, "description": description}
+    update_data = {
+        "title": title,
+        "description": description,
+        "region": region,
+        "gps_location": gps_location,
+    }
 
-    # If new flyer is provided, upload it to Cloudinary
+    # If a new flyer is uploaded
     if flyer:
         upload_result = cloudinary.uploader.upload(flyer.file)
         update_data["flyer"] = upload_result["secure_url"]
@@ -117,6 +141,35 @@ def update_issue(
     )
 
     if result.matched_count == 0:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Issue not found")
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            detail="Issue not found"
+        )
 
     return {"message": "Issue updated successfully"}
+
+
+# --- Delete Issue (AUTHORITIES only) ---
+@issues_router.delete(
+    "/issues/{issue_id}",
+    dependencies=[Depends(has_roles("authorities"))],
+)
+def delete_issue(issue_id: str):
+    """
+    Allows authorities to delete an issue.
+    """
+    if not ObjectId.is_valid(issue_id):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid issue ID"
+        )
+
+    result = issues_collection.delete_one({"_id": ObjectId(issue_id)})
+
+    if result.deleted_count == 0:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            detail="Issue not found"
+        )
+
+    return {"message": "Issue deleted successfully"}
