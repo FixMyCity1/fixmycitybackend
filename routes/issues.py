@@ -14,32 +14,49 @@ issues_router = APIRouter()
 
 
 # --- Get All Issues ---
+# --- Get All Issues ---
 @issues_router.get("/issues")
 def get_issues(
     title: str = "",
     description: str = "",
     region: str = "",
+    category: str = "",
+    status: str = "",   # 👈 new optional filter
     limit: int = 10,
     skip: int = 0,
-    category: str = "", 
 ):
     """
-    Retrieve all issues with optional search filters.
+    Retrieve all issues with optional search filters, including status.
     """
-    query = {
-        "$or": [
-            {"title": {"$regex": title, "$options": "i"}},
-            {"description": {"$regex": description, "$options": "i"}},
-            {"region": {"$regex": region, "$options": "i"}},
-            {"category": {"$regex": category, "$options": "i"}},
-        ]
-    }
+    # --- Base query ---
+    query = {"$and": []}
 
+    # Add text-based filters (regex for partial matches)
+    if title or description or region or category:
+        query["$and"].append({
+            "$or": [
+                {"title": {"$regex": title, "$options": "i"}},
+                {"description": {"$regex": description, "$options": "i"}},
+                {"region": {"$regex": region, "$options": "i"}},
+                {"category": {"$regex": category, "$options": "i"}},
+            ]
+        })
+
+    # Add status filter if provided (exact match)
+    if status:
+        query["$and"].append({"status": status})
+
+    # If no filters at all, default to empty query
+    if not query["$and"]:
+        query = {}
+
+    # Fetch issues with pagination
     issues = issues_collection.find(query).skip(int(skip)).limit(int(limit))
+
     return {"data": [replace_mongo_id(issue) for issue in issues]}
 
 
-# --- Report Issue (USER can create) ---
+
 @issues_router.post(
     "/issues",
     dependencies=[Depends(has_roles("user"))],
@@ -48,7 +65,7 @@ def post_issue(
     title: Annotated[str, Form()],
     description: Annotated[str, Form()],
     region: Annotated[str, Form()],
-    gps_location: Annotated[str, Form()],  # <--- Single GPS field
+    gps_location: Annotated[str, Form()],
     flyer: Annotated[UploadFile, File()],
     user_id: Annotated[str, Depends(is_authenticated)],
     category: Annotated[str, Form()],
@@ -56,7 +73,6 @@ def post_issue(
     """
     Allows users to report new issues with region and a single GPS location field.
     """
-    # Check if same user already created issue with same title
     existing_issue = issues_collection.count_documents({"title": title, "owner": user_id})
     if existing_issue > 0:
         raise HTTPException(
@@ -64,19 +80,18 @@ def post_issue(
             detail=f"Issue with title '{title}' already exists for this user."
         )
 
-    # Upload flyer to Cloudinary
     upload_result = cloudinary.uploader.upload(flyer.file)
 
-    # Save issue to DB
     issues_collection.insert_one(
         {
             "title": title,
             "description": description,
             "region": region,
-            "gps_location": gps_location,  # Stored as string
+            "gps_location": gps_location,
             "flyer": upload_result["secure_url"],
             "owner": user_id,
             "category": category,
+            "status": "pending",  # 👈 new field
         }
     )
 
@@ -105,23 +120,17 @@ def get_issue_by_id(issue_id: str):
     return {"data": replace_mongo_id(issue)}
 
 
-# --- Update Issue (AUTHORITIES only) ---
+# --- Update Issue Status (AUTHORITIES only) ---
 @issues_router.put(
     "/issues/{issue_id}",
     dependencies=[Depends(has_roles("authorities"))],
 )
-def update_issue(
+def update_issue_status(
     issue_id: str,
-    title: Annotated[str, Form()],
-    description: Annotated[str, Form()],
-    region: Annotated[str, Form()],
-    gps_location: Annotated[str, Form()],
-    category: Annotated[str, Form()],
-    flyer: Optional[UploadFile] = File(None),
-    
+    status_value: Annotated[str, Form(...)]
 ):
     """
-    Allows authorities to update issues, including region and GPS location.
+    Allows authorities to update ONLY the status of an issue (e.g., pending → completed).
     """
     if not ObjectId.is_valid(issue_id):
         raise HTTPException(
@@ -129,30 +138,35 @@ def update_issue(
             detail="Invalid issue ID"
         )
 
-    update_data = {
-        "title": title,
-        "description": description,
-        "region": region,
-        "gps_location": gps_location,
-        "category": category, 
-    }
+    # ✅ Validate status options
+    valid_statuses = ["pending", "in-progress", "completed", "rejected"]
+    if status_value not in valid_statuses:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid status. Allowed values: {valid_statuses}"
+        )
 
-    # If a new flyer is uploaded
-    if flyer:
-        upload_result = cloudinary.uploader.upload(flyer.file)
-        update_data["flyer"] = upload_result["secure_url"]
-
-    result = issues_collection.update_one(
-        {"_id": ObjectId(issue_id)},
-        {"$set": update_data}
-    )
-
-    if result.matched_count == 0:
+    # Check if issue exists
+    issue = issues_collection.find_one({"_id": ObjectId(issue_id)})
+    if not issue:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND,
             detail="Issue not found"
         )
 
-    return {"message": "Issue updated successfully"}
+    # Update only the status
+    result = issues_collection.update_one(
+        {"_id": ObjectId(issue_id)},
+        {"$set": {"status": status_value}}
+    )
+
+    if result.modified_count == 0:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="No changes made to the issue"
+        )
+
+    return {"message": f"Issue status updated to '{status_value}'"}
+
 
 
