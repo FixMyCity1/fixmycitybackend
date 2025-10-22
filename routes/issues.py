@@ -148,11 +148,9 @@ def get_issue_by_id(issue_id: str):
 def update_issue_status(
     issue_id: str,
     status_value: Annotated[str, Form(...)],
-    flyer: Annotated[UploadFile, File(...)],  # 👈 flyer is now REQUIRED
 ):
     """
-    Allows authorities to update BOTH the status and flyer image of an issue.
-    The photo upload is mandatory for each update.
+    Allows authorities to update ONLY the status of an issue.
     """
     # --- Validate issue ID ---
     if not ObjectId.is_valid(issue_id):
@@ -177,20 +175,10 @@ def update_issue_status(
             detail="Issue not found"
         )
 
-    # --- Upload new flyer image to Cloudinary ---
-    try:
-        upload_result = cloudinary.uploader.upload(flyer.file)
-        flyer_url = upload_result["secure_url"]
-    except Exception as e:
-        raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Image upload failed: {str(e)}"
-        )
-
-    # --- Update both status and flyer ---
+    # --- Update status only ---
     result = issues_collection.update_one(
         {"_id": ObjectId(issue_id)},
-        {"$set": {"status": status_value, "flyer": flyer_url}}
+        {"$set": {"status": status_value}}
     )
 
     if result.modified_count == 0:
@@ -201,5 +189,6 @@ def update_issue_status(
 
     return {
         "message": f"Issue updated successfully — status set to '{status_value}'",
-        "updated_data": {"status": status_value, "flyer": flyer_url}
+        "updated_data": {"status": status_value}
     }
+
