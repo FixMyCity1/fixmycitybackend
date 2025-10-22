@@ -21,7 +21,7 @@ def get_issues(
     description: str = "",
     region: str = "",
     category: str = "",
-    status: str = "",   # 👈 new optional filter
+    status: str = "",   
     limit: int = 10,
     skip: int = 0,
 ):
@@ -55,6 +55,27 @@ def get_issues(
 
     return {"data": [replace_mongo_id(issue) for issue in issues]}
 
+#user can only view his changes
+@issues_router.get(
+    "/my-issues",
+    dependencies=[Depends(has_roles("user"))],
+)
+def get_my_issues(user_id: Annotated[str, Depends(is_authenticated)]):
+    """
+    Retrieve all issues created by the currently authenticated user.
+    """
+    # Fetch all issues where owner == current user
+    issues = issues_collection.find({"owner": user_id})
+
+    user_issues = [replace_mongo_id(issue) for issue in issues]
+
+    if not user_issues:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            detail="You have not reported any issues yet."
+        )
+
+    return {"data": user_issues}
 
 
 @issues_router.post(
@@ -120,25 +141,27 @@ def get_issue_by_id(issue_id: str):
     return {"data": replace_mongo_id(issue)}
 
 
-# --- Update Issue Status (AUTHORITIES only) ---
 @issues_router.put(
     "/issues/{issue_id}",
     dependencies=[Depends(has_roles("authorities"))],
 )
 def update_issue_status(
     issue_id: str,
-    status_value: Annotated[str, Form(...)]
+    status_value: Annotated[str, Form(...)],
+    flyer: Annotated[UploadFile, File(...)],  # 👈 flyer is now REQUIRED
 ):
     """
-    Allows authorities to update ONLY the status of an issue (e.g., pending → completed).
+    Allows authorities to update BOTH the status and flyer image of an issue.
+    The photo upload is mandatory for each update.
     """
+    # --- Validate issue ID ---
     if not ObjectId.is_valid(issue_id):
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Invalid issue ID"
         )
 
-    # ✅ Validate status options
+    # --- Validate status options ---
     valid_statuses = ["pending", "in-progress", "completed", "rejected"]
     if status_value not in valid_statuses:
         raise HTTPException(
@@ -146,7 +169,7 @@ def update_issue_status(
             detail=f"Invalid status. Allowed values: {valid_statuses}"
         )
 
-    # Check if issue exists
+    # --- Check if the issue exists ---
     issue = issues_collection.find_one({"_id": ObjectId(issue_id)})
     if not issue:
         raise HTTPException(
@@ -154,10 +177,20 @@ def update_issue_status(
             detail="Issue not found"
         )
 
-    # Update only the status
+    # --- Upload new flyer image to Cloudinary ---
+    try:
+        upload_result = cloudinary.uploader.upload(flyer.file)
+        flyer_url = upload_result["secure_url"]
+    except Exception as e:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Image upload failed: {str(e)}"
+        )
+
+    # --- Update both status and flyer ---
     result = issues_collection.update_one(
         {"_id": ObjectId(issue_id)},
-        {"$set": {"status": status_value}}
+        {"$set": {"status": status_value, "flyer": flyer_url}}
     )
 
     if result.modified_count == 0:
@@ -166,7 +199,7 @@ def update_issue_status(
             detail="No changes made to the issue"
         )
 
-    return {"message": f"Issue status updated to '{status_value}'"}
-
-
-
+    return {
+        "message": f"Issue updated successfully — status set to '{status_value}'",
+        "updated_data": {"status": status_value, "flyer": flyer_url}
+    }
